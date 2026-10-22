@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>古建拂影 Ancient Building Brush</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:SimSun,serif;}
+body{background:#f3efe7;color:#2c2c2c;overflow:hidden;height:100vh;}
+.wrapper{width:100vw;height:100vh;position:relative;}
+/* 顶部标题栏 */
+.top-bar{position:absolute;top:16px;left:24px;z-index:10;}
+h1{font-size:26px;letter-spacing:4px;margin-bottom:4px;}
+.desc{font-size:14px;opacity:0.75;max-width:420px;}
+/* 3D画布 */
+#threeCanvas{display:block;width:100%;height:100%;}
+/* 左下：科普面板+模型切换 */
+.left-panel{position:absolute;bottom:20px;left:20px;z-index:10;}
+.btn-group{margin-bottom:12px;display:flex;gap:8px;}
+button{
+    padding:7px 14px;border:1px solid #777;background:rgba(255,255,255,0.45);
+    border-radius:5px;font-size:14px;cursor:pointer;
+}
+button:hover{background:rgba(255,255,255,0.8);}
+.info-card{
+    width:280px;padding:14px;background:rgba(255,255,255,0.55);
+    border-radius:8px;display:none;
+}
+.info-card h3{margin-bottom:6px;font-size:17px;}
+.info-card p{font-size:14px;line-height:1.5;}
+/* 右下摄像头预览 */
+#video{
+    position:absolute;bottom:20px;right:20px;width:170px;
+    border-radius:8px;transform:scaleX(-1);z-index:10;border:2px solid rgba(255,255,255,0.5);
+}
+/* 连击提示 */
+.combo-hint{
+    position:absolute;top:20px;right:24px;font-size:22px;z-index:10;
+    opacity:0.8;
+}
+</style>
+</head>
+<body>
+<div class="wrapper">
+    <div class="top-bar">
+        <h1>古建拂影 Ancient Building Brush</h1>
+        <div class="desc">手势拂切湘地古建构件，解锁吊柱、斗拱、雕花窗科普</div>
+    </div>
+
+    <canvas id="threeCanvas"></canvas>
+
+    <div class="left-panel">
+        <div class="btn-group">
+            <button id="modelSwitch">切换：吊脚楼 / 窨子屋</button>
+            <button id="resetBtn">复原建筑</button>
+        </div>
+        <div class="info-card" id="infoCard">
+            <h3 id="partName">构件名称</h3>
+            <p id="partText">构件介绍文字</p>
+        </div>
+    </div>
+
+    <video id="video" autoplay playsinline></video>
+    <div class="combo-hint">连击：<span id="comboNum">0</span></div>
+</div>
+
+<!-- Three.js + MediaPipe CDN -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+// ========= 全局状态（和你的概念文档对齐）=========
+const state = {
+    currentModel: "diaojiao", // diaojiao吊脚楼 / xiangzhong窨子屋
+    combo: 0,
+    unlocked: {pillar:false, dougong:false, window:false},
+    isPaused: false,
+    handPos: {x:0,y:0},
+    handGesture: "none", // sweep / hold / open / fist
+    audio:{base:null, wind:null, bgm:null}
+};
+const partData = {
+    pillar:{name:"吊柱", text:"吊脚楼承重吊柱，悬柱不落地，是干栏建筑核心特征。"},
+    dougong:{name:"飞檐斗拱", text:"斗拱承接屋檐重量，出挑深远，湘地古建标志性构件。"},
+    window:{name:"雕花窗", text:"木格雕花窗，纹样取自湘西花鸟，兼具采光与装饰。"}
+};
+
+// ========= Three.js 初始化 =========
+const canvas = document.getElementById("threeCanvas");
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf0ece2);
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 2.2, 5);
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+// 灯光
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(3,5,4);
+scene.add(dirLight);
+scene.add(new THREE.AmbientLight(0xffffff,0.4));
+
+// 构件容器
+let buildingParts = {};
+function createBuilding(type){
+    // 清空旧模型
+    Object.values(buildingParts).forEach(m=>scene.remove(m));
+    buildingParts = {};
+    const matWood = new THREE.MeshLambertMaterial({color:0x8c6b4b});
+    const matRoof = new THREE.MeshLambertMaterial({color:0x554438});
+    // 吊柱
+    const pillarGeo = new THREE.CylinderGeometry(0.18,0.18,2.2,8);
+    buildingParts.pillar = new THREE.Mesh(pillarGeo, matWood);
+    buildingParts.pillar.position.set(-1.2,0,0);
+    buildingParts.pillar.userData = {type:"pillar", cut:false};
+    // 斗拱
+    const dgGeo = new THREE.BoxGeometry(1.6,0.35,0.7);
+    buildingParts.dougong = new THREE.Mesh(dgGeo, matWood);
+    buildingParts.dougong.position.set(0,1.1,0);
+    buildingParts.dougong.userData = {type:"dougong", cut:false};
+    // 雕花窗
+    const winGeo = new THREE.BoxGeometry(1.1,1.4,0.12);
+    buildingParts.window = new THREE.Mesh(winGeo, matWood);
+    buildingParts.window.position.set(1.2,0.4,0);
+    buildingParts.window.userData = {type:"window", cut:false};
+    // 屋顶
+    const roofGeo = new THREE.ConeGeometry(2.6,1.4,4);
+    buildingParts.roof = new THREE.Mesh(roofGeo, matRoof);
+    buildingParts.roof.rotation.y = Math.PI/4;
+    buildingParts.roof.position.set(0,2.4,0);
+    scene.add(...Object.values(buildingParts));
+}
+createBuilding(state.currentModel);
+
+// ========= 手势识别 MediaPipe =========
+const video = document.getElementById("video");
+const hands = new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+hands.setOptions({maxNumHands:2,modelComplexity:1,minDetectionConfidence:0.65});
+hands.onResults(res=>{
+    if(res.multiHandLandmarks.length === 0){
+        state.handGesture = "none";
+        return;
+    }
+    const handsLand = res.multiHandLandmarks;
+    // 识别手势逻辑
+    if(handsLand.length === 2){
+        state.handGesture = "open"; // 双手张开
+    }else{
+        const lm = handsLand[0];
+        const wrist = lm[0];
+        state.handPos.x = (1-wrist.x) * window.innerWidth;
+        state.handPos.y = wrist.y * window.innerHeight;
+        // 握拳简易判断：指尖靠近掌心
+        const thumbTip = lm[4], indexTip=lm[8];
+        const dist = Math.hypot(thumbTip.x-indexTip.x, thumbTip.y-indexTip.y);
+        if(dist < 0.07){
+            state.handGesture = "fist";
+        }else{
+            state.handGesture = "sweep"; // 手掌划过（切割）
+        }
+    }
+    handleGesture(state.handGesture);
+});
+const camera = new Camera(video, {onFrame:async()=>await hands.send({image:video}),width:640,height:480});
+camera.start();
+
+// ========= 手势处理逻辑（严格对应你的设计）=========
+let lastCutTime = 0;
+function handleGesture(gst){
+    if(state.isPaused && gst !== "fist") return;
+    const now = Date.now();
+    switch(gst){
+        case "sweep":
+            if(now - lastCutTime < 450) return;
+            lastCutTime = now;
+            rayCastCut();
+            break;
+        case "open":
+            restoreAll();
+            state.combo = 0;
+            updateComboUI();
+            fadeAllAudio();
+            break;
+        case "fist":
+            state.isPaused = !state.isPaused;
+            document.getElementById("infoCard").style.display = state.isPaused ? "block":"none";
+            break;
+    }
+}
+
+// 射线拾取切割构件
+function rayCastCut(){
+    const pointer = new THREE.Vector2(
+        (state.handPos.x / window.innerWidth)*2 -1,
+        -(state.handPos.y / window.innerHeight)*2 +1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(pointer, camera);
+    const targets = Object.values(buildingParts).filter(m=>!m.userData.cut && m.userData.type);
+    const intersect = raycaster.intersectObjects(targets);
+    if(intersect.length>0){
+        const hit = intersect[0].object;
+        hit.userData.cut = true;
+        hit.visible = false;
+        const key = hit.userData.type;
+        state.unlocked[key] = true;
+        showInfo(key);
+        state.combo +=1;
+        updateComboUI();
+        audioByCombo(state.combo);
+    }
+}
+function showInfo(key){
+    const card = document.getElementById("infoCard");
+    document.getElementById("partName").innerText = partData[key].name;
+    document.getElementById("partText").innerText = partData[key].text;
+    card.style.display = "block";
+    setTimeout(()=>{if(!state.isPaused) card.style.display="none";}, 2600);
+}
+function restoreAll(){
+    Object.values(buildingParts).forEach(m=>{
+        m.visible = true;
+        if(m.userData.type) m.userData.cut = false;
+    });
+    state.unlocked = {pillar:false, dougong:false, window:false};
+}
+function updateComboUI(){
+    document.getElementById("comboNum").innerText = state.combo;
+}
+
+// ========= 连击音频分层 =========
+function audioByCombo(num){
+    if(num ===3){
+        const a = new Audio("https://assets.mixkit.co/sfx/preview/mixkit-wooden-furniture-impact-1021.mp3");
+        a.volume=0.35;a.play();
+    }
+    if(num ===6){
+        state.audio.base = new Audio("https://assets.mixkit.co/sfx/preview/mixkit-ambient-piano-short-1168.mp3");
+        state.audio.base.loop=true;state.audio.base.volume=0.2;state.audio.base.play();
+    }
+    if(num ===10){
+        state.audio.wind = new Audio("https://assets.mixkit.co/sfx/preview/mixkit-light-wind-ambience-1170.mp3");
+        state.audio.wind.loop=true;state.audio.wind.volume=0.22;state.audio.wind.play();
+    }
+    if(num ===15){
+        state.audio.bgm = new Audio("https://assets.mixkit.co/sfx/preview/mixkit-ethnical-fantasy-ambience-1165.mp3");
+        state.audio.bgm.loop=true;state.audio.bgm.volume=0.25;state.audio.bgm.play();
+    }
+}
+function fadeAllAudio(){
+    Object.values(state.audio).forEach(a=>{
+        if(a){a.pause();a.currentTime=0;}
+    })
+}
+
+// ========= 按钮事件 =========
+document.getElementById("modelSwitch").onclick = ()=>{
+    state.currentModel = state.currentModel==="diaojiao" ? "xiangzhong":"diaojiao";
+    createBuilding(state.currentModel);
+    restoreAll();
+    state.combo=0;updateComboUI();fadeAllAudio();
+}
+document.getElementById("resetBtn").onclick = ()=>{
+    restoreAll();
+    state.combo=0;updateComboUI();fadeAllAudio();
+}
+
+// ========= 渲染循环 =========
+function render(){
+    controls.update();
+    renderer.render(scene,camera);
+    requestAnimationFrame(render);
+}
+render();
+window.addEventListener("resize",()=>{
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+})
+</script>
+</body>
+</html>
