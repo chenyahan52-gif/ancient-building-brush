@@ -166,8 +166,8 @@ hands.onResults(res=>{
     }
     handleGesture(state.handGesture);
 });
-const camera = new Camera(video, {onFrame:async()=>await hands.send({image:video}),width:640,height:480});
-camera.start();
+camera = new Camera(video, {onFrame:async()=>await hands.send({image:video}),width:640,height:480});
+
 
 // ========= 手势处理逻辑（严格对应你的设计）=========
 let lastCutTime = 0;
