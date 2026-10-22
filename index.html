@@ -65,8 +65,8 @@ button:hover{background:rgba(255,255,255,0.8);}
 </div>
 
 <!-- Three.js + MediaPipe CDN -->
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 
@@ -96,7 +96,7 @@ camera.position.set(0, 2.2, 5);
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-const controls = new OrbitControls(camera, renderer.domElement);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
 // 灯光
@@ -167,7 +167,6 @@ hands.onResults(res=>{
     handleGesture(state.handGesture);
 });
 camera = new Camera(video, {onFrame:async()=>await hands.send({image:video}),width:640,height:480});
-
 
 // ========= 手势处理逻辑（严格对应你的设计）=========
 let lastCutTime = 0;
